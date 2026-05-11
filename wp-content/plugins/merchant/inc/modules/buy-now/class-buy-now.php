@@ -1,0 +1,624 @@
+<?php
+
+/**
+ * Buy Now.
+ *
+ * @package Merchant
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit; // Exit if accessed directly
+}
+
+/**
+ * Buy Now Class.
+ *
+ */
+class Merchant_Buy_Now extends Merchant_Add_Module {
+
+	/**
+	 * Module ID.
+	 *
+	 */
+	const MODULE_ID = 'buy-now';
+
+	/**
+	 * Is module preview.
+	 *
+	 */
+	public static $is_module_preview = false;
+
+	/**
+	 * Exclusion manager instance.
+	 *
+	 * @var Merchant_Buy_Now_Exclusion
+	 */
+	public $exclusion;
+
+	/**
+	 * Constructor.
+	 *
+	 */
+	public function __construct() {
+
+		// Module id.
+		$this->module_id = self::MODULE_ID;
+
+		// WooCommerce only.
+		$this->wc_only = true;
+
+		parent::__construct();
+
+		// Module section.
+		$this->module_section = 'reduce-abandonment';
+
+		// Module default settings.
+        $this->module_default_settings = array(
+                'button-text'         => __( 'Buy Now', 'merchant' ),
+                'customize-button'    => 1,
+                'exclusion'           => 0,
+                'excluded_products'   => array(),
+                'excluded_categories' => array(),
+                'excluded_tags'       => array(),
+                'excluded_brands'     => array(),
+        );
+
+		// Module data.
+		$this->module_data = Merchant_Admin_Modules::$modules_data[ self::MODULE_ID ];
+
+		// Module options path.
+		$this->module_options_path = MERCHANT_DIR . 'inc/modules/' . self::MODULE_ID . '/admin/options.php';
+
+		// Is module preview page.
+		if ( is_admin() && parent::is_module_settings_page() ) {
+			self::$is_module_preview = true;
+
+			// Enqueue admin styles.
+			add_action( 'admin_enqueue_scripts', array( $this, 'admin_enqueue_css' ) );
+
+			// Admin preview box.
+			add_filter( 'merchant_module_preview', array( $this, 'render_admin_preview' ), 10, 2 );
+
+			// Custom CSS.
+			// The custom CSS should be added here as well due to ensure preview box works properly.
+			add_filter( 'merchant_custom_css', array( $this, 'admin_custom_css' ) );
+
+		}
+
+		if ( Merchant_Modules::is_module_active( self::MODULE_ID ) && is_admin() ) {
+			// Init translations.
+			$this->init_translations();
+		}
+
+		if ( ! Merchant_Modules::is_module_active( self::MODULE_ID ) ) {
+			return;
+		}
+
+		// Initialize exclusion manager.
+		$this->exclusion = new Merchant_Buy_Now_Exclusion( $this );
+
+		// Allow other modules (like Quick View) to check if a product is excluded.
+		add_filter( 'merchant_buy_now_is_excluded', array( $this, 'check_product_exclusion' ), 10, 2 );
+
+		// Return early if it's on admin but not in the respective module settings page.
+		if ( is_admin() && ! wp_doing_ajax() && ! parent::is_module_settings_page() ) {
+			return;
+		}
+
+		// Enqueue styles.
+		add_action( 'merchant_enqueue_before_main_css_js', array( $this, 'enqueue_css' ) );
+
+        // Enqueue scripts.
+		add_action( 'merchant_enqueue_before_main_css_js', array( $this, 'enqueue_scripts' ) );
+
+		// Buy now listener.
+		add_action( 'wp_loaded', array( $this, 'buy_now_listener' ) );
+		add_action( 'wp_loaded', array( $this, 'buy_now_listener_grouped' ), 999 );
+
+		// Single product buy now button.
+		$single_product_hook = ! empty( $settings['hook-order-single-product'] ) ? $settings['hook-order-single-product'] : array(
+			'hook_name' => 'woocommerce_after_add_to_cart_button',
+			'hook_priority' => 10,
+		);
+		add_action( $single_product_hook['hook_name'], array( $this, 'single_product_buy_now_button' ), $single_product_hook['hook_priority'] );
+
+		// Shop archive buy now button.
+		$shop_archive_hook = ! empty( $settings['hook-order-shop-archive'] ) ? $settings['hook-order-shop-archive'] : array(
+			'hook_name' => 'woocommerce_after_shop_loop_item',
+			'hook_priority' => 10,
+		);
+		add_action( $shop_archive_hook['hook_name'], array( $this, 'shop_archive_product_buy_now_button' ), $shop_archive_hook['hook_priority'] );
+
+		// Custom CSS.
+		add_filter( 'merchant_custom_css', array( $this, 'frontend_custom_css' ) );
+    
+		// Module wrapper class.
+		add_filter( 'merchant_module_buy_now_wrapper_class', array( $this, 'html_wrapper_class' ) );
+	}
+
+	/**
+	 * Init translations.
+	 *
+	 * @return void
+	 */
+	public function init_translations() {
+		$settings = $this->get_module_settings();
+		if ( ! empty( $settings['button-text'] ) ) {
+			Merchant_Translator::register_string( $settings['button-text'], esc_html__( 'Buy now button text', 'merchant' ) );
+		}
+	}
+
+	/**
+	 * Admin enqueue CSS.
+	 *
+	 * @return void
+	 */
+	public function admin_enqueue_css() {
+		$page   = ( ! empty( $_GET['page'] ) ) ? sanitize_text_field( wp_unslash( $_GET['page'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$module = ( ! empty( $_GET['module'] ) ) ? sanitize_text_field( wp_unslash( $_GET['module'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+		if ( 'merchant' === $page && self::MODULE_ID === $module ) {
+			wp_enqueue_style( 'merchant-' . self::MODULE_ID, MERCHANT_URI . 'assets/css/modules/' . self::MODULE_ID . '/buy-now.min.css', array(), MERCHANT_VERSION );
+			wp_enqueue_style( 'merchant-admin-' . self::MODULE_ID, MERCHANT_URI . 'assets/css/modules/' . self::MODULE_ID . '/admin/preview.min.css', array(), MERCHANT_VERSION );
+            wp_enqueue_script('merchant-admin-' . self::MODULE_ID, MERCHANT_URI . 'assets/js/modules/' . self::MODULE_ID . '/admin/preview.min.js', array( 'jquery' ), MERCHANT_VERSION, true );
+		}
+	}
+
+	/**
+	 * Enqueue CSS.
+	 *
+	 * @return void
+	 */
+	public function enqueue_css() {
+		wp_enqueue_style( 'merchant-' . self::MODULE_ID, MERCHANT_URI . 'assets/css/modules/' . self::MODULE_ID . '/buy-now.min.css', array(), MERCHANT_VERSION );
+	}
+
+	/**
+	 * Enqueue scripts.
+	 *
+	 * @return void
+	 */
+	public function enqueue_scripts() {
+		wp_enqueue_script( 'merchant-' . self::MODULE_ID, MERCHANT_URI . 'assets/js/modules/' . self::MODULE_ID . '/buy-now.min.js', array(), MERCHANT_VERSION, true );
+	}
+
+	/**
+	 * Render admin preview
+	 *
+	 * @param Merchant_Admin_Preview $preview
+	 * @param string $module
+	 *
+	 * @return Merchant_Admin_Preview
+	 */
+	public function render_admin_preview( $preview, $module ) {
+		if ( self::MODULE_ID === $module ) {
+			// HTML.
+			$preview->set_html( array( $this, 'admin_preview_content' ), $this->get_module_settings() );
+
+			// Button Text.
+			$preview->set_text( 'button-text', '.merchant-buy-now-button' );
+
+			// Display Customizer.
+			$preview->set_class( 'customize-button', '.merchant-buy-now-button', array(), 'merchant-custom-buy-now-button' );
+
+			// Margin Top.
+			$preview->set_css( 'margin-top', '.merchant-buy-now-button', '--mrc-buy-now-margin-top', 'px' );
+
+			// Margin Bottom.
+			$preview->set_css( 'margin-bottom', '.merchant-buy-now-button', '--mrc-buy-now-margin-bottom', 'px' );
+
+			// Padding CSS variables.
+			$preview->set_css( 'padding_top_bottom', '.merchant-buy-now-button', '--mrc-buy-now-padding-top-bottom', 'px' );
+			$preview->set_css( 'padding_left_right', '.merchant-buy-now-button', '--mrc-buy-now-padding-left-right', 'px' );
+		}
+
+		return $preview;
+	}
+
+	/**
+	 * Admin preview content.
+	 *
+	 * @param array $settings The module settings
+	 *
+	 * @return void
+	 */
+	public function admin_preview_content( $settings ) {
+
+		/**
+		 * Hook 'merchant_module_buy_now_wrapper_class'
+		 * 
+		 * @since 1.8
+		 */
+		$wrapper_classes = apply_filters( 'merchant_module_buy_now_wrapper_class', array() );
+		?>
+		<div class="mrc-preview-single-product-elements">
+			<div class="mrc-preview-left-column">
+				<div class="mrc-preview-product-image-wrapper">
+					<div class="mrc-preview-product-image"></div>
+					<div class="mrc-preview-product-image-thumbs">
+						<div class="mrc-preview-product-image-thumb"></div>
+						<div class="mrc-preview-product-image-thumb"></div>
+						<div class="mrc-preview-product-image-thumb"></div>
+					</div>
+				</div>
+			</div>
+			<div class="mrc-preview-right-column">
+				<div class="mrc-preview-text-placeholder"></div>
+				<div class="mrc-preview-text-placeholder mrc-mw-70"></div>
+				<div class="mrc-preview-text-placeholder mrc-mw-30"></div>
+				<div class="mrc-preview-text-placeholder mrc-mw-40"></div>
+				<a href="#" class="merchant-buy-now-button <?php echo esc_attr( implode( ' ', $wrapper_classes ) ); ?>"><?php echo esc_html( $settings[ 'button-text' ] ); ?></a>
+			</div>
+		</div>
+
+		<?php
+	}
+
+	/**
+     * Buy now listener.
+     *
+	 * @return void
+	 * @throws Exception
+	 */
+	public function buy_now_listener() {
+		$product_id = (int) sanitize_text_field( wp_unslash( $_REQUEST['merchant-buy-now'] ?? '' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! $product_id ) {
+			return;
+		}
+
+		$product = wc_get_product( $product_id );
+
+		if ( ! $product->is_type( 'grouped' ) ) {
+			$variation_id = (int) sanitize_text_field( wp_unslash( $_REQUEST['variation_id'] ?? '' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$quantity     = (int) sanitize_text_field( $_REQUEST['quantity'] ?? 1 ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+			if ( $variation_id ) {
+				WC()->cart->add_to_cart( $product_id, $quantity, $variation_id );
+			} else {
+				WC()->cart->add_to_cart( $product_id, $quantity );
+			}
+
+			wp_safe_redirect( wc_get_checkout_url() );
+			exit;
+		}
+	}
+
+	/**
+     * Buy now listener for Grouped products.
+     *
+	 * @return void
+	 * @throws Exception
+	 */
+	public function buy_now_listener_grouped() {
+		$product_id = (int) sanitize_text_field( wp_unslash( $_REQUEST['merchant-buy-now'] ?? '' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! $product_id ) {
+            return;
+        }
+
+		$product = wc_get_product( $product_id );
+
+		// reference 'add_to_cart_handler_grouped' method in woocommerce/includes/class-wc-form-handler.php
+		if ( $product->is_type( 'grouped' ) ) {
+			$quantity_set      = false;
+			$was_added_to_cart = false;
+			$added_to_cart     = array();
+			$items             = isset( $_REQUEST['quantity'] ) && is_array( $_REQUEST['quantity'] ) ? wp_unslash( $_REQUEST['quantity'] ) : array(); // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+
+			foreach ( $items as $item => $quantity ) {
+				$quantity = wc_stock_amount( $quantity );
+				if ( $quantity <= 0 ) {
+					continue;
+				}
+				$quantity_set = true;
+
+				/**
+				 * `woocommerce_add_to_cart_validation`
+				 *
+				 * @since WC 7.2.0
+				 */
+				$passed_validation = apply_filters( 'woocommerce_add_to_cart_validation', true, $item, $quantity );
+
+				// Suppress total recalculation until finished.
+				remove_action( 'woocommerce_add_to_cart', array( WC()->cart, 'calculate_totals' ), 20, 0 );
+
+				if ( $passed_validation && false !== WC()->cart->add_to_cart( $item, $quantity ) ) {
+					$was_added_to_cart      = true;
+					$added_to_cart[ $item ] = $quantity;
+				}
+
+				add_action( 'woocommerce_add_to_cart', array( WC()->cart, 'calculate_totals' ), 20, 0 );
+			}
+
+			if ( ! $was_added_to_cart && ! $quantity_set ) {
+				if ( ! wc_has_notice( __( 'Please choose the quantity of items you wish to add to your cart&hellip;', 'merchant' ), 'error' ) ) {
+					wc_add_notice( __( 'Please choose the quantity of items you wish to add to your cart&hellip;', 'merchant' ), 'error' );
+				}
+				return;
+			} elseif ( $was_added_to_cart ) {
+				wc_add_to_cart_message( $added_to_cart );
+			}
+		}
+
+		wp_safe_redirect( wc_get_checkout_url() );
+		exit;
+    }
+
+	/**
+	 * Single product buy now button.
+	 * TODO: Render the output trough template files.
+	 *
+	 * @return void
+	 */
+	public function single_product_buy_now_button() {
+		// Don't include on Sticky Add to Cart
+		if ( did_filter( 'merchant_sticky_add_to_cart_template_args' ) ) {
+			return;
+		}
+
+		// Don't include on Quick View
+		if ( did_action( 'merchant_quick_view_before_add_to_cart' ) ) {
+			return;
+		}
+
+		global $post, $product;
+
+		/**
+		 * Hook 'merchant_is_pre_order_product' Checks if the product is a pre-order.
+		 *
+		 * @param int $product_id The product ID.
+		 * 
+		 * @since 2.1.9
+		 */
+        $is_pre_order = apply_filters( 'merchant_is_pre_order_product', $product->get_id() );
+        if ( true === $is_pre_order ) {
+            return;
+        }
+
+		$settings = $this->get_module_settings();
+
+		if( isset( $settings['display-product'] ) && ! $settings['display-product'] ) {
+			return;
+		}
+
+		// Check if product should be excluded.
+		if ( $this->exclusion && $this->exclusion->should_exclude( $product ) ) {
+			return;
+		}
+
+		if ( ! empty( $product ) ) {
+			if ( 'yes' === get_post_meta( $post->ID, '_is_pre_order', true ) && strtotime( get_post_meta( $post->ID, '_pre_order_date', true ) ) > time() ) {
+				return;
+			}
+		}
+
+		$text = Merchant_Admin_Options::get( 'buy-now', 'button-text', esc_html__( 'Buy Now', 'merchant' ) );
+
+		$_wrapper_classes   = array();
+		$_wrapper_classes[] = $product->get_type() === 'variable' ? 'disabled' : '';
+
+        $_attrs   = array();
+        $_attrs[] = $product->get_type() === 'variable' ? 'disabled=disabled' : '';
+
+        /**
+		 * Hook 'merchant_module_buy_now_wrapper_class'
+		 * 
+		 * @since 1.8
+		 */
+		$wrapper_classes = apply_filters( 'merchant_module_buy_now_wrapper_class', $_wrapper_classes );
+
+		$_attrs = array();
+
+        // Add the disabled attribute if the product is variable
+		if ( $product->get_type() === 'variable' ) {
+			$_attrs['disabled'] = 'disabled';
+		}
+
+		/**
+		 * Hook 'merchant_module_buy_now_wrapper_attrs'
+		 *
+		 * @since 1.9.16
+		 */
+		$attrs = apply_filters( 'merchant_module_buy_now_wrapper_attrs', $_attrs );
+
+        // Convert attributes array to a string
+		$attributes = '';
+		foreach ( $attrs as $key => $value ) {
+			$attributes .= sprintf( '%s="%s" ', esc_attr( $key ), esc_attr( $value ) );
+		}
+		?>
+        <!-- Don't define type="submit" because it creates issue with block themes. The button is inside the form, so by default the type is already "submit". -->
+		<button name="merchant-buy-now" value="<?php echo absint( $product->get_ID() ); ?>" class="button alt wp-element-button merchant-buy-now-button <?php echo esc_attr( implode( ' ', $wrapper_classes ) ); ?>" <?php echo wp_kses( trim( $attributes ), merchant_kses_allowed_tags() ); ?>>
+            <?php echo esc_html( Merchant_Translator::translate( $text ) ); ?>
+        </button>
+		<?php
+	}
+
+	/**
+	 * Shop archive product buy now button.
+	 * TODO: Render the output trough template files.
+	 *
+	 * @return void
+	 */
+	public function shop_archive_product_buy_now_button() {
+		global $post, $product;
+
+		/**
+		 * Hook 'merchant_is_pre_order_product' Checks if the product is a pre-order.
+		 *
+		 * @param int $product_id The product ID.
+		 * 
+		 * @since 2.1.9
+		 */
+        $is_pre_order = apply_filters( 'merchant_is_pre_order_product', $product->get_id() );
+        if ( true === $is_pre_order ) {
+            return;
+        }
+
+        if ( ! $product->is_in_stock() ) {
+            return;
+        }
+
+		$settings = $this->get_module_settings();
+
+		// Check if product should be excluded.
+		if ( $this->exclusion && $this->exclusion->should_exclude( $product ) ) {
+			return;
+		}
+
+		if ( ! is_product() && isset( $settings['display-archive'] ) && ! $settings['display-archive'] ) {
+			return;
+		}
+
+		if ( is_product() && isset( $settings['display-upsell-related'] ) && ! $settings['display-upsell-related'] ) {
+			return;
+		}
+
+		if ( ! in_array( $product->get_type(), array( 'simple', 'merchant_pro_bundle' ), true ) ) {
+			return;
+		}
+
+		if ( $product->is_type( 'merchant_pro_bundle' ) && $product->has_variables() ) {
+			return;
+		}
+
+		if ( ! empty( $product )
+			&& Merchant_Modules::is_module_active( 'pre-orders' ) 
+			&& 'yes' === get_post_meta( $post->ID, '_is_pre_order', true ) 
+			&& strtotime( get_post_meta( $post->ID, '_pre_order_date', true ) ) > time() 
+		) {
+			return;
+		}
+
+		$text = Merchant_Admin_Options::get( 'buy-now', 'button-text', esc_html__( 'Buy Now', 'merchant' ) );
+
+		/**
+		 * Hook 'merchant_module_buy_now_wrapper_class'
+		 * 
+		 * @since 1.8
+		 */
+		$wrapper_classes = apply_filters( 'merchant_module_buy_now_wrapper_class', array() );
+		?>
+		<a href="<?php echo esc_url( add_query_arg( array( 'merchant-buy-now' => $product->get_ID() ), wc_get_checkout_url() ) ); ?>" class="button alt wp-element-button product_type_simple add_to_cart_button merchant-buy-now-button <?php echo esc_attr( implode( ' ', $wrapper_classes ) ); ?>"><?php echo esc_html( Merchant_Translator::translate( $text ) ); ?></a>
+		<?php
+	}
+
+	/**
+	 * Custom CSS.
+	 *
+	 * @return string
+	 */
+	public function get_module_custom_css() {
+		$css = '';
+
+		// Text Color.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'text-color', '#ffffff', '.merchant-buy-now-button', '--mrc-buy-now-text-color' );
+
+		// Text Color (hover).
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'text-hover-color', '#ffffff', '.merchant-buy-now-button', '--mrc-buy-now-text-hover-color' );
+
+		// Border Color.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'border-color', '#212121', '.merchant-buy-now-button', '--mrc-buy-now-border-color' );
+
+		// Border Color (hover).
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'border-hover-color', '#414141', '.merchant-buy-now-button', '--mrc-buy-now-border-hover-color' );
+
+		// Background Color.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'background-color', '#212121', '.merchant-buy-now-button', '--mrc-buy-now-background-color' );
+
+		// Background Color (hover).
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'background-hover-color', '#414141', '.merchant-buy-now-button', '--mrc-buy-now-background-hover-color' );
+
+		// Font Size.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'font-size', 16, '.merchant-buy-now-button', '--mrc-buy-now-font-size', 'px' );
+
+		// Padding CSS variables (always use custom padding values)
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'padding_top_bottom', 13, '.merchant-buy-now-button', '--mrc-buy-now-padding-top-bottom', 'px' );
+
+		// Padding Left/Right.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'padding_left_right', 24, '.merchant-buy-now-button', '--mrc-buy-now-padding-left-right', 'px' );
+
+		// Margin Top.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'margin-top', 10, '.merchant-buy-now-button', '--mrc-buy-now-margin-top', 'px' );
+
+		// Margin Bottom.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'margin-bottom', 10, '.merchant-buy-now-button', '--mrc-buy-now-margin-bottom', 'px' );
+
+		// Border radius.
+		$css .= Merchant_Custom_CSS::get_variable_css( self::MODULE_ID, 'border-radius', 0, '.merchant-buy-now-button', '--mrc-buy-now-border-radius', 'px' );
+
+		return $css;
+	}
+
+	/**
+	 * Admin custom CSS.
+	 *
+	 * @param string $css The custom CSS.
+	 * @return string $css The custom CSS.
+	 */
+	public function admin_custom_css( $css ) {
+		$css .= $this->get_module_custom_css();
+
+		return $css;
+	}
+
+	/**
+	 * Frontend custom CSS.
+	 *
+	 * @param string $css The custom CSS.
+	 * @return string $css The custom CSS.
+	 */
+	public function frontend_custom_css( $css ) {
+		$css .= $this->get_module_custom_css();
+
+		return $css;
+	}
+  
+	/**
+	 * HTML wrapper class.
+	 *
+	 * @return array $classes The wrapper classes.
+	 */
+	public function html_wrapper_class( $classes ) {
+		$settings = $this->get_module_settings();
+
+		if ( ! empty( $settings['customize-button'] ) ) {
+			$classes[] = 'merchant-custom-buy-now-button';
+		}
+
+		return $classes;
+	}
+
+	/**
+	 * Check if a product should be excluded from the Buy Now button.
+	 *
+	 * This method is called by the 'merchant_buy_now_is_excluded' filter,
+	 * allowing other modules (like Quick View) to check exclusion status
+	 * without directly accessing the exclusion manager.
+	 *
+	 * @param bool       $is_excluded Current exclusion status.
+	 * @param WC_Product $product     The product to check.
+	 *
+	 * @return bool True if the product should be excluded, false otherwise.
+	 * @since 2.2.4
+	 */
+	public function check_product_exclusion( $is_excluded, $product ) {
+		// If already excluded by another filter, respect that decision.
+		if ( $is_excluded ) {
+			return $is_excluded;
+		}
+
+		// Delegate to the exclusion manager if it exists.
+		if ( $this->exclusion && method_exists( $this->exclusion, 'should_exclude' ) ) {
+			return $this->exclusion->should_exclude( $product );
+		}
+
+		return false;
+	}
+}
+
+require_once MERCHANT_DIR.'inc/modules/buy-now/class-buy-now-exclusion.php';
+
+// Initialize the module.
+add_action( 'init', function() {
+	Merchant_Modules::create_module( new Merchant_Buy_Now() );
+} );
