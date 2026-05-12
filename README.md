@@ -142,15 +142,17 @@ http://localhost/wordpress_organic_shop/wp-admin
 ## Tài khoản demo (nếu có)
 
 ### Admin
-```text
+```localhost
+Username: minhthanh
+Password: thanhbn123
+```deploy
 Username: admin
-Password: admin123
+Password: admin@123
 ```
-
 ### User
 ```text
-Username: user
-Password: user123
+Username: test
+Password: test123
 ```
 
 > Có thể thay đổi tùy theo cấu hình thực tế của hệ thống.
@@ -189,8 +191,7 @@ Cập nhật sau.
 
 ## Link online đã deploy (nếu có)
 
-Cập nhật sau.
-
+organicshop.infinityfree.me
 ---
 
 ## Repository GitHub
